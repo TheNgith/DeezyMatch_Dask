@@ -8,6 +8,8 @@ import time
 from tqdm import tqdm
 import pickle
 from torch.utils.data import Dataset
+from dask import dataframe as dd
+from dask import array as da
 
 from .utils import cprint, bc
 from .utils import string_split
@@ -223,7 +225,7 @@ def csv_split_tokenize(
                 bc.dgreen,
                 f"-- read list of characters from {read_list_chars}",
             )
-            dataset_vocab.addTokens(pd.read_pickle(read_list_chars))
+            dataset_vocab.addTokens(da.from_zarr(read_list_chars))
         # Add additional tokens in the dataset, if any
         dataset_vocab.addTokens(s1_s2_flatten_all_tokens)
         cprint("[INFO]", bc.dgreen, f"-- Length of vocabulary: {dataset_vocab.n_tok}")
@@ -270,6 +272,7 @@ def test_tokenize(
     mode="char",
     cutoff=None,
     save_test_class="./test_dc.df",
+    save_test_class_dask="./test_dc.ddf",
     dataframe_input=False,
     csv_sep="\t",
     one_column_inp=False,
@@ -416,7 +419,7 @@ def test_tokenize(
         abs_path = os.path.abspath(save_test_class)
         if not os.path.isdir(os.path.dirname(abs_path)):
             os.makedirs(os.path.dirname(abs_path))
-        test_dc.df.to_pickle(save_test_class)
+        test_dc.dask_df.to_parquet(save_test_class_dask)
 
     return test_dc
 
@@ -426,6 +429,7 @@ class DatasetClass(Dataset):
     def __init__(self, dataset_split, dataset_vocab, maxlen=100):
         self.maxlen = maxlen
         self.df = dataset_split
+        self.dask_df = dd.from_pandas(self.df)
         self.vocab = dataset_vocab.tok2index.keys()
 
         tqdm.pandas(desc="length s1", leave=False)
@@ -478,17 +482,20 @@ class lookupToken:
 
     def __init__(self, name):
         self.name = name
-        self.tok2index = {"_PAD": 0, "_UNK": 1}
+        self.tok2index = dd.from_dict({"_PAD": [0], "_UNK": [1]}, npartitions=1)
         self.tok2count = {}
-        self.index2tok = {0: "_PAD", 1: "_UNK"}
+        self.index2tok = dd.from_dict({'0': ["_PAD"], '1': ["_UNK"]}, npartitions=1)
         self.n_tok = 2  # Count _PAD and _UNK
 
     def addTokens(self, list_tokens):
-        for tok in list_tokens:
-            if tok not in self.tok2index:
+        for i in range(list_tokens.size):
+            tok = list_tokens[i].compute()
+            if tok not in self.tok2index.columns:
+                self.tok2index[tok] = self.n_tok 
+                ##if tok is integer by any chance, self.tok2index[tok] this will fail
                 self.tok2index[tok] = self.n_tok
                 self.tok2count[tok] = 1
-                self.index2tok[self.n_tok] = tok
+                self.index2tok[str(self.n_tok)] = tok
                 self.n_tok += 1
             else:
                 self.tok2count[tok] += 1
