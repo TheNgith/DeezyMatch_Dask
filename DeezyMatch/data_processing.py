@@ -22,6 +22,13 @@ set_seed_everywhere(1364)
 
 
 # ------------------- csv_split_tokenize --------------------
+
+# IMPORTANT: DASK UPDATE NOTE: 
+# 1. The file type of read_list_chars is now a zarray file, not a pickle file anymore. Please convert all the in-use files to zarray (use module pickleToZarr.py)
+# 2. test_tokenize function will now save the dataframe in .parquet format, not pickle anymore 
+# 3. lookupToken class has been modified to utilize dask dataframe instead of pandas dataframe
+# 4. pretrained_vocab_path must be a pickled lookupToken object, so any previously pickled pretrained_vocab file must be re-pickled to get updated to dask dataframe 
+
 def csv_split_tokenize(
     dataset_path,
     pretrained_vocab_path=None,
@@ -492,7 +499,7 @@ class lookupToken:
             tok = list_tokens[i].compute()
             if tok not in self.tok2index.columns:
                 self.tok2index[tok] = self.n_tok 
-                ##if tok is integer by any chance, self.tok2index[tok] this will fail
+                ## if tok is integer by any chance, self.tok2index[tok] this will fail
                 self.tok2index[tok] = self.n_tok
                 self.tok2count[tok] = 1
                 self.index2tok[str(self.n_tok)] = tok
