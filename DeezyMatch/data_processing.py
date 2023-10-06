@@ -23,11 +23,19 @@ set_seed_everywhere(1364)
 
 # ------------------- csv_split_tokenize --------------------
 
-# IMPORTANT: DASK UPDATE NOTE: 
-# 1. The file type of read_list_chars is now a zarray file, not a pickle file anymore. Please convert all the in-use files to zarray (use module pickleToZarr.py)
-# 2. test_tokenize function will now save the dataframe in .parquet format, not pickle anymore 
-# 3. lookupToken class has been modified to utilize dask dataframe instead of pandas dataframe
-# 4. pretrained_vocab_path must be a pickled lookupToken object, so any previously pickled pretrained_vocab file must be re-pickled to get updated to dask dataframe 
+'''
+IMPORTANT: DASK UPDATE NOTE: 
+1. The file type of read_list_chars is now a zarray file, not a pickle file anymore. 
+Please convert all the in-use files to zarray (use module pickleToZarr in conversion.py)
+
+2. test_tokenize function will now save the dataframe in .parquet format, not pickle anymore 
+
+3. lookupToken class has been modified to utilize dask dataframe instead of pandas dataframe
+
+4. pretrained_vocab_path must be a pickled lookupToken object, 
+so any previously pickled pretrained_vocab file must be re-pickled to get updated to dask dataframe 
+(use update_lookupToken in conversion.py)
+'''
 
 def csv_split_tokenize(
     dataset_path,
@@ -183,7 +191,7 @@ def csv_split_tokenize(
         # XXX we need to document the following lines
         s1_indx = [
             [
-                dataset_vocab.tok2index[tok]
+                dataset_vocab.tok2index[tok].compute()[0]
                 for tok in seq
                 if tok in dataset_vocab.tok2index
             ]
@@ -191,7 +199,7 @@ def csv_split_tokenize(
         ]
         s2_indx = [
             [
-                dataset_vocab.tok2index[tok]
+                dataset_vocab.tok2index[tok].compute()[0]
                 for tok in seq
                 if tok in dataset_vocab.tok2index
             ]
@@ -238,10 +246,10 @@ def csv_split_tokenize(
         cprint("[INFO]", bc.dgreen, f"-- Length of vocabulary: {dataset_vocab.n_tok}")
 
         dataset_split["s1_indx"] = [
-            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s1_tokenized
+            [dataset_vocab.tok2index[tok].compute()[0] for tok in seq] for seq in s1_tokenized
         ]
         dataset_split["s2_indx"] = [
-            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s2_tokenized
+            [dataset_vocab.tok2index[tok].compute()[0] for tok in seq] for seq in s2_tokenized
         ]
 
     # cleanup the indices
@@ -376,11 +384,11 @@ def test_tokenize(
 
     # XXX we need to explain why we have an if in the following for loop
     s1_indx = [
-        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
+        [train_vocab.tok2index[tok].compute()[0] for tok in seq if tok in train_vocab.tok2index]
         for seq in s1_tokenized
     ]
     s2_indx = [
-        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
+        [train_vocab.tok2index[tok].compute()[0] for tok in seq if tok in train_vocab.tok2index]
         for seq in s2_tokenized
     ]
 
@@ -499,7 +507,7 @@ class lookupToken:
             tok = list_tokens[i].compute()
             if tok not in self.tok2index.columns:
                 self.tok2index[tok] = self.n_tok 
-                ## if tok is integer by any chance, self.tok2index[tok] this will fail
+                ## if tok is integer by any chance, self.tok2index[tok] will fail
                 self.tok2index[tok] = self.n_tok
                 self.tok2count[tok] = 1
                 self.index2tok[str(self.n_tok)] = tok
