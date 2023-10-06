@@ -429,8 +429,8 @@ class DatasetClass(Dataset):
     def __init__(self, dataset_split, dataset_vocab, maxlen=100):
         self.maxlen = maxlen
         self.df = dataset_split
-        self.dask_df = dd.from_pandas(self.df)
-        self.vocab = dataset_vocab.tok2index.keys()
+        self.dask_df = dd.from_pandas(self.df, npartitions=10) #arbitrarily set to 10
+        self.vocab = dataset_vocab.tok2index.columns #equicvalent to .keys() but supported by dask dataframe
 
         tqdm.pandas(desc="length s1", leave=False)
         self.df["s1_len"] = self.df.s1_indx.progress_apply(
