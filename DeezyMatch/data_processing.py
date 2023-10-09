@@ -6,7 +6,6 @@ import os
 import pandas as pd
 import time
 from tqdm import tqdm
-import pickle
 from torch.utils.data import Dataset
 from dask import dataframe as dd
 from dask import array as da
@@ -14,6 +13,7 @@ from dask import array as da
 from .utils import cprint, bc
 from .utils import string_split
 from .utils import normalizeString
+from .dask_data_format_handler import handle_zarr, handle_lookupToken
 
 # --- set seed for reproducibility
 from .utils import set_seed_everywhere
@@ -22,20 +22,6 @@ set_seed_everywhere(1364)
 
 
 # ------------------- csv_split_tokenize --------------------
-
-'''
-IMPORTANT: DASK UPDATE NOTE: 
-1. The file type of read_list_chars is now a zarray file, not a pickle file anymore. 
-Please convert all the in-use files to zarray (use module pickleToZarr in conversion.py)
-
-2. test_tokenize function will now save the dataframe in .parquet format, not pickle anymore 
-
-3. lookupToken class has been modified to utilize dask dataframe instead of pandas dataframe
-
-4. pretrained_vocab_path must be a pickled lookupToken object, 
-so any previously pickled pretrained_vocab file must be re-pickled to get updated to dask dataframe 
-(use update_lookupToken in conversion.py)
-'''
 
 def csv_split_tokenize(
     dataset_path,
@@ -185,8 +171,7 @@ def csv_split_tokenize(
     s2_tokenized = dataset_split["s2_tokenized"].to_list()
 
     if pretrained_vocab_path:
-        with open(pretrained_vocab_path, "rb") as handle:
-            dataset_vocab = pickle.load(handle)
+        dataset_vocab = handle_lookupToken(pretrained_vocab_path)
 
         # XXX we need to document the following lines
         s1_indx = [
@@ -240,7 +225,7 @@ def csv_split_tokenize(
                 bc.dgreen,
                 f"-- read list of characters from {read_list_chars}",
             )
-            dataset_vocab.addTokens(da.from_zarr(read_list_chars))
+            dataset_vocab.addTokens(handle_zarr(read_list_chars))
         # Add additional tokens in the dataset, if any
         dataset_vocab.addTokens(s1_s2_flatten_all_tokens)
         cprint("[INFO]", bc.dgreen, f"-- Length of vocabulary: {dataset_vocab.n_tok}")
