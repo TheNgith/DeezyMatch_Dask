@@ -32,14 +32,14 @@ def handle_zarr(directory: str):
             cprint(
                 "[DASK ERROR]",
                 bc.red,
-                f"-- Conversion failed: Pickle failed to read: {directory}\n\n",
+                f"-- Conversion failed: Pickle failed to read: {directory}",
             )
             raise e
         except DaskArrayFailed as e:
             cprint(
                 "[DASK ERROR]",
                 bc.red,
-                f"-- Conversion failed: Must be a pickled List of Strings: {directory}. \n\n",
+                f"-- Conversion failed: Must be a pickled List of Strings: {directory}",
             )
             raise e
         except zarr.errors.ContainsArrayError as e:
@@ -61,7 +61,7 @@ def handle_zarr(directory: str):
                 cprint(
                     "[DASK INFO]",
                     bc.yellow,
-                    f"-- You might want to update this to the input file for future run sessions",
+                    f"-- You might want to update the input file to save resource for future run sessions",
                 )
                 cprint(
                     "[DASK INFO]",
@@ -85,7 +85,7 @@ def handle_zarr(directory: str):
         cprint(
             "[DASK ERROR]",
             bc.red,
-            f"-- Incorrect file format, ressolving attempt failed: {directory}\n\n",
+            f"-- Incorrect file format, ressolving attempt failed: {directory}",
         )
         raise e
     
@@ -118,43 +118,80 @@ def handle_lookupToken(directory: str):
             cprint(
                 "[DASK ERROR]",
                 bc.red,
-                f"-- pretrained vocab must be stored as lookupToken object or alike. \n\n",
+                f"-- pretrained vocab must be stored as lookupToken object or alike",
             )
             raise e
         except oldLookupToken:
             cprint(
                 "[DASK INFO]",
-                bc.green,
+                bc.yellow,
                 f"-- Old lookupToken object detected at {directory}",
             )
             try:
                 cprint(
-                "[DASK INFO]",
-                bc.green,
-                f"-- Begin upgrading...",
-            )
-                new_data, new_path = update_lookupToken(data, directory)
-            except updatelookupTokenFailed as e:
+                    "[DASK INFO]",
+                    bc.yellow,
+                    f"-- Trying looking for the updated version in the same folder...",
+                )
+                try_path = path.splitext(directory)[0] + '_updated' + path.splitext(directory)[1]
+                new_data = handle_lookupToken(try_path)
+            except:
+                try:
+                    cprint(
+                        "[DASK INFO]",
+                        bc.yellow,
+                        f"-- Couldn't find the updated version in the same folder",
+                    )
+                    cprint(
+                        "[DASK INFO]",
+                        bc.green,
+                        f"-- Begin upgrading the old one...",
+                    )
+                    new_data, new_path = update_lookupToken(data, directory)
+                except updatelookupTokenFailed as e:
+                    cprint(
+                        "[DASK INFO]",
+                        bc.red,
+                        f"Upgrade failed.",
+                    )
+                    raise e
+                else:
+                    cprint(
+                        "[DASK INFO]",
+                        bc.lgreen,
+                        f"-- Upgrade succeeded.",
+                    )
+                    cprint(
+                        "[DASK INFO]",
+                        bc.green,
+                        f"-- New vocab file stored at: {new_path}",
+                    )
+                    cprint(
+                        "[DASK INFO]",
+                        bc.yellow,
+                        f"-- You might want to update pretrained_vocab_path in the input file to: {new_path}",
+                    )
+                    cprint(
+                        "[DASK INFO]",
+                        bc.green,
+                        f"-- Continue execution...",
+                    ) 
+                    return new_data
+            else: 
                 cprint(
                     "[DASK INFO]",
-                    bc.red,
-                    f"Upgrade failed.\n\n",
+                    bc.yellow,
+                    f"-- More updated version of pretrained vocab found at {try_path}",
                 )
-                raise e
-            else:
+                cprint(
+                    "[DASK INFO]",
+                    bc.yellow,
+                    f"-- You might want to update the input file to save resources in next running sessions",
+                )
                 cprint(
                     "[DASK INFO]",
                     bc.green,
-                    f"-- Upgrade succeeded.",
+                    f"-- This session continues normally...",
                 )
-                cprint(
-                    "[DASK INFO]",
-                    bc.green,
-                    f"-- New vocab file stored at: {new_path}",
-                )
-                cprint(
-                    "[DASK INFO]",
-                    bc.green,
-                    f"-- Continue execution...",
-                ) 
                 return new_data
+                
