@@ -1,13 +1,13 @@
 from dask import array as da
 from dask import dataframe as dd
-from check_lookupToken import islookupToken
+from .check_lookupToken import islookupToken
 from os import path
 
 import pickle
 import zarr
 
-from utils import cprint, bc
-from conversion import *
+from .utils import cprint, bc
+from .conversion import *
 
 class notLookupToken(Exception): pass
 class oldLookupToken(Exception): pass

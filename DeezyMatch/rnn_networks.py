@@ -41,6 +41,7 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from torch.autograd import Variable
 
 from .data_processing import test_tokenize
+from .dask_data_format_handler import handle_zarr, handle_lookupToken
 from .utils import cprint, bc, log_message
 from .utils import print_stats
 from .utils import torch_summarize
@@ -1181,8 +1182,7 @@ def inference(
 
     # --- create test data class
     # read vocabulary
-    with open(train_vocab_path, "rb") as handle:
-        train_vocab = pickle.load(handle)
+    train_vocab = handle_lookupToken(train_vocab_path)
 
     # create the actual class here
     test_dc = test_tokenize(

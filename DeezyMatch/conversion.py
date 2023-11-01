@@ -5,7 +5,7 @@ from numpy import array as nparray
 
 import pickle
 
-from .data_processing import lookupToken
+from .lookupToken_class import lookupToken
 
 class pickleFailed(Exception): pass
 class DaskArrayFailed(Exception): pass
@@ -39,19 +39,12 @@ def update_lookupToken(data, directory: str):
     new_data = lookupToken(data.name)
     
     try:
-        new_tok2index_dict = dict()
-        for key in data.tok2index.keys():
-            new_tok2index_dict[key] = [data.tok2index[key]]
         
-        new_data.tok2index = dd.from_dict(new_tok2index_dict, npartitions=3)
+        new_data.tok2index = data.tok2index
         
         new_data.tok2count = data.tok2count
         
-        new_index2tok_dict = dict()
-        for key in data.index2tok.keys():
-            new_index2tok_dict[str(key)] = [data.index2tok[key]]
-        
-        new_data.index2tok = dd.from_dict(new_index2tok_dict, npartitions=3)
+        new_data.index2tok = data.index2tok
         
         new_data.n_tok = data.n_tok
         

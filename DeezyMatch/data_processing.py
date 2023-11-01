@@ -9,11 +9,13 @@ from tqdm import tqdm
 from torch.utils.data import Dataset
 from dask import dataframe as dd
 from dask import array as da
+import pyarrow
 
 from .utils import cprint, bc
 from .utils import string_split
 from .utils import normalizeString
 from .dask_data_format_handler import handle_zarr, handle_lookupToken
+from .lookupToken_class import lookupToken
 
 # --- set seed for reproducibility
 from .utils import set_seed_everywhere
@@ -164,7 +166,7 @@ def csv_split_tokenize(
     )
 
     s1_s2_flatten = dataset_split[["s1_tokenized", "s2_tokenized"]].to_numpy().flatten()
-    s1_s2_flatten_all_tokens = np.unique(np.hstack(s1_s2_flatten)).tolist()
+    s1_s2_flatten_all_tokens = da.from_array(np.unique(np.hstack(s1_s2_flatten)))
 
     cprint("[INFO]", bc.dgreen, "-- convert tokens to indices")
     s1_tokenized = dataset_split["s1_tokenized"].to_list()
@@ -176,7 +178,7 @@ def csv_split_tokenize(
         # XXX we need to document the following lines
         s1_indx = [
             [
-                dataset_vocab.tok2index[tok].compute()[0]
+                dataset_vocab.tok2index[tok]
                 for tok in seq
                 if tok in dataset_vocab.tok2index
             ]
@@ -184,7 +186,7 @@ def csv_split_tokenize(
         ]
         s2_indx = [
             [
-                dataset_vocab.tok2index[tok].compute()[0]
+                dataset_vocab.tok2index[tok]
                 for tok in seq
                 if tok in dataset_vocab.tok2index
             ]
@@ -231,10 +233,10 @@ def csv_split_tokenize(
         cprint("[INFO]", bc.dgreen, f"-- Length of vocabulary: {dataset_vocab.n_tok}")
 
         dataset_split["s1_indx"] = [
-            [dataset_vocab.tok2index[tok].compute()[0] for tok in seq] for seq in s1_tokenized
+            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s1_tokenized
         ]
         dataset_split["s2_indx"] = [
-            [dataset_vocab.tok2index[tok].compute()[0] for tok in seq] for seq in s2_tokenized
+            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s2_tokenized
         ]
 
     # cleanup the indices
@@ -331,7 +333,7 @@ def test_tokenize(
             bc.lgreen,
             "number of labels, True: {} and False: {}".format(num_true, num_false),
         )
-
+    
     # instead of processing the entire dataset we first consider double the amount of the cutoff
     if cutoff == None:
         cutoff = len(dataset_pd)
@@ -369,11 +371,11 @@ def test_tokenize(
 
     # XXX we need to explain why we have an if in the following for loop
     s1_indx = [
-        [train_vocab.tok2index[tok].compute()[0] for tok in seq if tok in train_vocab.tok2index]
+        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
         for seq in s1_tokenized
     ]
     s2_indx = [
-        [train_vocab.tok2index[tok].compute()[0] for tok in seq if tok in train_vocab.tok2index]
+        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
         for seq in s2_tokenized
     ]
 
@@ -419,8 +421,9 @@ def test_tokenize(
         abs_path = os.path.abspath(save_test_class)
         if not os.path.isdir(os.path.dirname(abs_path)):
             os.makedirs(os.path.dirname(abs_path))
-        test_dc.dask_df.to_parquet(save_test_class_dask)
-
+        
+        # test_dc.dask_df.to_parquet(save_test_class_dask, schema=test_dc.schema)
+        test_dc.df.to_pickle(open(save_test_class, 'wb'))
     return test_dc
 
 
@@ -429,8 +432,14 @@ class DatasetClass(Dataset):
     def __init__(self, dataset_split, dataset_vocab, maxlen=100):
         self.maxlen = maxlen
         self.df = dataset_split
-        self.dask_df = dd.from_pandas(self.df, npartitions=10) #arbitrarily set to 10
-        self.vocab = dataset_vocab.tok2index.columns #equicvalent to .keys() but supported by dask dataframe
+        self.dask_df = dd.from_pandas(dataset_split, npartitions=1) #arbitrarily set to 10
+        self.vocab = dataset_vocab.tok2index.keys()
+        self.schema = {
+            's1_tokenized': pyarrow.list_(pyarrow.string()),
+            's2_tokenized': pyarrow.list_(pyarrow.string()),
+            's1_index': pyarrow.list_(pyarrow.int64()),
+            's2_index': pyarrow.list_(pyarrow.int64())
+        }
 
         tqdm.pandas(desc="length s1", leave=False)
         self.df["s1_len"] = self.df.s1_indx.progress_apply(
@@ -472,30 +481,3 @@ class DatasetClass(Dataset):
         else:
             padded[: len(s)] = s
         return padded
-
-
-# ------------------- lookupToken --------------------
-class lookupToken:
-    """
-    Create a lookup table for tokens
-    """
-
-    def __init__(self, name):
-        self.name = name
-        self.tok2index = dd.from_dict({"_PAD": [0], "_UNK": [1]}, npartitions=1)
-        self.tok2count = {}
-        self.index2tok = dd.from_dict({'0': ["_PAD"], '1': ["_UNK"]}, npartitions=1)
-        self.n_tok = 2  # Count _PAD and _UNK
-
-    def addTokens(self, list_tokens):
-        for i in range(list_tokens.size):
-            tok = list_tokens[i].compute()
-            if tok not in self.tok2index.columns:
-                self.tok2index[tok] = self.n_tok 
-                ## if tok is integer by any chance, self.tok2index[tok] will fail
-                self.tok2index[tok] = self.n_tok
-                self.tok2count[tok] = 1
-                self.index2tok[str(self.n_tok)] = tok
-                self.n_tok += 1
-            else:
-                self.tok2count[tok] += 1
