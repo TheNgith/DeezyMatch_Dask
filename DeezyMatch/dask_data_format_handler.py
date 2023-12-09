@@ -152,7 +152,7 @@ def handle_lookupToken(directory: str):
                     cprint(
                         "[DASK INFO]",
                         bc.red,
-                        f"Upgrade failed.",
+                        f"-- Upgrade failed.",
                     )
                     raise e
                 else:

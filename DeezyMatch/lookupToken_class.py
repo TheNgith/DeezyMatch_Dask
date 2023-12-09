@@ -10,11 +10,9 @@ class lookupToken:
 
     def __init__(self, name):
         self.name = name
-        # self.tok2index = dd.from_dict({"_PAD": [0], "_UNK": [1]}, npartitions=1)
-        self.tok2index = {"_PAD": [0], "_UNK": [1]}
+        self.tok2index = {"_PAD": 0, "_UNK": 1}
         self.tok2count = {}
-        # self.index2tok = dd.from_dict({'0': ["_PAD"], '1': ["_UNK"]}, npartitions=1)
-        self.index2tok = {'0': ["_PAD"], '1': ["_UNK"]}
+        self.index2tok = {0: "_PAD", 1: "_UNK"}
         self.n_tok = 2  # Count _PAD and _UNK
 
     def addTokens(self, list_tokens):
@@ -27,7 +25,7 @@ class lookupToken:
                 ## if tok is integer by any chance, self.tok2index[tok] will fail
                 self.tok2index[tok] = self.n_tok
                 self.tok2count[tok] = 1
-                self.index2tok[str(self.n_tok)] = tok
+                self.index2tok[self.n_tok] = tok
                 self.n_tok += 1
             else:
                 self.tok2count[tok] += 1

@@ -9,7 +9,6 @@ from tqdm import tqdm
 from torch.utils.data import Dataset
 from dask import dataframe as dd
 from dask import array as da
-import pyarrow
 
 from .utils import cprint, bc
 from .utils import string_split
@@ -21,8 +20,6 @@ from .lookupToken_class import lookupToken
 from .utils import set_seed_everywhere
 
 set_seed_everywhere(1364)
-
-
 # ------------------- csv_split_tokenize --------------------
 
 def csv_split_tokenize(
@@ -48,31 +45,41 @@ def csv_split_tokenize(
     # dataset_pd = dataset_pd.rename(columns={0: "s1", 1: "s2", 2: "label"})
 
     ds_fio = open(dataset_path, "r")
-    df_list = ds_fio.readlines()
-    for i in range(len(df_list)):
-        tmp_split_row = df_list[i].split(csv_sep)
+    df_list = da.from_array([])
+    i=0
+    for line in ds_fio:
+        tmp_split_row = line.split(csv_sep)
         if str(tmp_split_row[2]).strip().lower() not in ["true", "false", "1", "0"]:
-            print(f"SKIP: {df_list[i]}")
+            print(f"SKIP: {line}")
             # change the label to remove_me,
             # we drop the rows with no true|false in the label column
             tmp_split_row = f"X{csv_sep}X{csv_sep}remove_me".split(csv_sep)
-        df_list[i] = tmp_split_row[:3]
-    dataset_pd = pd.DataFrame(df_list, columns=["s1", "s2", "label"])
-    dataset_pd["s1"] = dataset_pd["s1"].str.strip()
-    dataset_pd["s2"] = dataset_pd["s2"].str.strip()
-    dataset_pd["label"] = dataset_pd["label"].str.strip()
+        line = list(map(lambda x: x.strip(), tmp_split_row[:3]))
+        df_list = da.append(df_list, line)
+        i+=1
+    df_list = df_list.reshape(i, 3)
+    dataset_pd = dd.from_dask_array(df_list, columns=["s1", "s2", "label"])
 
     # remove faulty rows
-    dataset_pd = dataset_pd.drop(
-        dataset_pd[
-            ~dataset_pd["label"].astype(str).str.contains("true|false", case=False)
-        ].index
-    )
-    dataset_pd.label.replace("(?i)TRUE", True, inplace=True, regex=True)
-    dataset_pd.label.replace("(?i)FALSE", False, inplace=True, regex=True)
+    dropping_index = dataset_pd[
+            ~dataset_pd["label"].astype(str).str.contains("true|false", case=False)].index
+    
+    dataset_pd_index = range(0, i)
+    
+    dataset_pd = dataset_pd.loc[list(set(dataset_pd_index).difference(set(dropping_index)))]
+    dataset_pd.label = dataset_pd.label.replace("(?i)TRUE", True, regex=True)
+    dataset_pd.label = dataset_pd.label.replace("(?i)FALSE", False, regex=True)
+    
     # count number of False and True
-    num_true = len(dataset_pd[dataset_pd["label"] == True])
-    num_false = len(dataset_pd[dataset_pd["label"] == False])
+    counter = dataset_pd["label"].value_counts().compute().to_dict()
+    if len(counter) < 2:
+        if True not in counter.keys():
+            counter[True] = 0
+        if False not in counter.keys():
+            counter[False] = 0
+    num_true = counter[True]
+    num_false = counter[False]
+    print(counter)
     cprint(
         "[INFO]",
         bc.lgreen,
@@ -86,10 +93,10 @@ def csv_split_tokenize(
     dataset_pd["split"] = "not_assigned"
     dataset_pd["original_index"] = dataset_pd.index
 
-    dataset_split = pd.DataFrame()
+    dataset_split = dd.from_pandas(pd.DataFrame(), npartitions=1)
     for label in set(dataset_pd["label"]):
         rows_one_label = dataset_pd.loc[dataset_pd["label"] == label].copy()
-        rows_one_label.reset_index(inplace=True)
+        rows_one_label = rows_one_label.reset_index()
         n_total = len(rows_one_label)
 
         if n_train_examples:
@@ -113,9 +120,11 @@ def csv_split_tokenize(
             rows_one_label.loc[
                 rows_one_label["split"] == "not_assigned", "split"
             ] = "train"
-
-        #dataset_split = dataset_split.append(rows_one_label)
-        dataset_split = pd.concat([dataset_split, rows_one_label])
+        
+        dataset_split = dd.concat([
+                                   dataset_split, 
+                                   rows_one_label
+                                   ])
     cprint(
         "[INFO]",
         bc.dgreen,
@@ -145,78 +154,83 @@ def csv_split_tokenize(
 
     cprint("[INFO]", bc.dgreen, "-- create vocabulary")
     dataset_split["s1_tokenized"] = dataset_split["s1_unicode"].apply(
-        lambda x: string_split(
+        lambda x: da.from_array(string_split(
             x,
             tokenize=mode["tokenize"],
             min_gram=mode["min_gram"],
             max_gram=mode["max_gram"],
             token_sep=mode["token_sep"],
             prefix_suffix=mode["prefix_suffix"],
-        )
-    )
+        )))
     dataset_split["s2_tokenized"] = dataset_split["s2_unicode"].apply(
-        lambda x: string_split(
+        lambda x: da.from_array(string_split(
             x,
             tokenize=mode["tokenize"],
             min_gram=mode["min_gram"],
             max_gram=mode["max_gram"],
             token_sep=mode["token_sep"],
             prefix_suffix=mode["prefix_suffix"],
-        )
-    )
-
-    s1_s2_flatten = dataset_split[["s1_tokenized", "s2_tokenized"]].to_numpy().flatten()
-    s1_s2_flatten_all_tokens = da.from_array(np.unique(np.hstack(s1_s2_flatten)))
+        )))
+    
+    s1_s2_flatten = dataset_split[["s1_tokenized", "s2_tokenized"]].to_dask_array(lengths=True).ravel()
+    s1_s2_flatten_all_tokens = da.unique(da.hstack([s1_s2_flatten]))
 
     cprint("[INFO]", bc.dgreen, "-- convert tokens to indices")
-    s1_tokenized = dataset_split["s1_tokenized"].to_list()
-    s2_tokenized = dataset_split["s2_tokenized"].to_list()
+
+    s1_tokenized = dataset_split["s1_tokenized"].to_dask_array(lengths=True)
+    s2_tokenized = dataset_split["s2_tokenized"].to_dask_array(lengths=True)
 
     if pretrained_vocab_path:
         dataset_vocab = handle_lookupToken(pretrained_vocab_path)
 
         # XXX we need to document the following lines
         s1_indx = [
-            [
-                dataset_vocab.tok2index[tok]
-                for tok in seq
-                if tok in dataset_vocab.tok2index
-            ]
-            for seq in s1_tokenized
-        ]
+                    [
+                        dataset_vocab.tok2index[tok.compute()]
+                        for tok in seq.compute()
+                        if tok.compute() in dataset_vocab.tok2index
+                    ] 
+                    for seq in tqdm(s1_tokenized)
+                ]
         s2_indx = [
-            [
-                dataset_vocab.tok2index[tok]
-                for tok in seq
-                if tok in dataset_vocab.tok2index
-            ]
-            for seq in s2_tokenized
-        ]
-
+                    [
+                        dataset_vocab.tok2index[tok.compute()]
+                        for tok in seq.compute()
+                        if tok.compute() in dataset_vocab.tok2index
+                    ] 
+                    for seq in tqdm(s2_tokenized)
+                ]
+        
         # Compute len(s1_indx) / len(s1_tokenized)
         # If this ratio is 1: all characters (after tokenization) could be found in the pretrained vocabulary
         # Else: some characters are missing. If "1 - (that ratio) > missing_char_threshold", remove the entry
         to_be_removed = []
         for i in range(len(s1_indx) - 1, -1, -1):
+            s1_tokenized_i = s1_tokenized[i].compute()
+            s2_tokenized_i = s2_tokenized[i].compute()
             if (
-                (1 - len(s1_indx[i]) / max(1, len(s1_tokenized[i])))
-                > missing_char_threshold
-                or (1 - len(s2_indx[i]) / max(1, len(s2_tokenized[i])))
-                > missing_char_threshold
-                or len(s1_tokenized[i]) == 0
-                or len(s2_tokenized[i]) == 0
+                (1 - len(s1_indx[i]) / max(1, s1_tokenized_i.shape[0])) >  missing_char_threshold
+                or (1 - len(s2_indx[i]) / max(1, s2_tokenized_i.shape[0])) > missing_char_threshold
+                or s1_tokenized_i.shape[0] == 0 
+                or s2_tokenized_i.shape[0] == 0
             ):
-                print(i, s1_indx[i], s1_tokenized[i])
+                print(i, s1_indx[i], s1_tokenized_i)
                 to_be_removed.append(i)
                 del s1_indx[i]
                 del s2_indx[i]
 
         cprint("[INFO]", bc.dgreen, "skipping {} lines".format(len(to_be_removed)))
-        dataset_split.reset_index(inplace=True)
-        dataset_split.drop(to_be_removed, axis=0, inplace=True)
-
-        dataset_split["s1_indx"] = s1_indx
-        dataset_split["s2_indx"] = s2_indx
+       
+        dataset_split = dataset_split.reset_index()
+    
+        dataset_split = dataset_split.repartition(npartitions=1)
+      
+        dataset_split.divisions = (0, dataset_split.shape[0].compute() - 1)
+      
+        dataset_split = dataset_split.loc[list(set(dataset_split.index).difference(set(to_be_removed)))]
+        
+        dataset_split["s1_indx"] = dd.from_array(np.array([[]] + s1_indx, dtype=object)[1:])
+        dataset_split["s2_indx"] = dd.from_array(np.array([[]] + s2_indx, dtype=object)[1:])
 
     else:
         cprint("[INFO]", bc.dgreen, "-- create a lookup table for tokens")
@@ -232,15 +246,15 @@ def csv_split_tokenize(
         dataset_vocab.addTokens(s1_s2_flatten_all_tokens)
         cprint("[INFO]", bc.dgreen, f"-- Length of vocabulary: {dataset_vocab.n_tok}")
 
-        dataset_split["s1_indx"] = [
-            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s1_tokenized
-        ]
-        dataset_split["s2_indx"] = [
-            [dataset_vocab.tok2index[tok] for tok in seq] for seq in s2_tokenized
-        ]
+        dataset_split["s1_indx"] = dd.from_array(np.array([
+                    [dataset_vocab.tok2index[tok.compute()] for tok in seq.compute() if tok.compute() in dataset_vocab.tok2index] 
+                    for seq in tqdm(s1_tokenized)]))
+        dataset_split["s2_indx"] = dd.from_array(np.array([
+                    [dataset_vocab.tok2index[tok.compute()] for tok in seq.compute() if tok.compute() in dataset_vocab.tok2index] 
+                    for seq in tqdm(s2_tokenized)]))
 
     # cleanup the indices
-    dataset_split.reset_index(drop=True, inplace=True)
+    dataset_split = dataset_split.reset_index(drop=True)
 
     with pd.option_context("mode.chained_assignment", None):
         train_dc = DatasetClass(
@@ -280,7 +294,7 @@ def test_tokenize(
     one_column_inp=False,
     verbose=True,
 ):
-
+    
     if dataframe_input:
         if verbose:
             cprint("[INFO]", bc.dgreen, "use a dataframe in test_tokenize.")
@@ -289,10 +303,10 @@ def test_tokenize(
         if verbose:
             cprint("[INFO]", bc.dgreen, "read CSV file: {}".format(dataset_path))
         ds_fio = open(dataset_path, "r")
-        df_list = ds_fio.readlines()
-        for i in range(len(df_list)):
-            tmp_split_row = df_list[i].split(csv_sep)
-
+        df_list = da.from_array([])
+        i = 0
+        for line in ds_fio:
+            tmp_split_row = line.split(csv_sep)
             # If one_column_inp is set to True, extend the row
             if one_column_inp == True:
                 # Copy the string of the first column into the second column
@@ -302,31 +316,39 @@ def test_tokenize(
 
             if str(tmp_split_row[2]).strip().lower() not in ["true", "false", "1", "0"]:
                 if verbose:
-                    print(f"SKIP: {df_list[i]}")
+                    print(f"SKIP: {line}")
                 # change the label to remove_me,
                 # we drop the rows with no true|false in the label column
                 tmp_split_row = f"X{csv_sep}X{csv_sep}remove_me".split(csv_sep)
-            df_list[i] = tmp_split_row[:3]
-
-        dataset_pd = pd.DataFrame(df_list, columns=["s1", "s2", "label"])
-        dataset_pd["s1"] = dataset_pd["s1"].str.strip()
-        dataset_pd["s2"] = dataset_pd["s2"].str.strip()
-        dataset_pd["label"] = dataset_pd["label"].str.strip()
-
+            line = list(map(lambda x: x.strip(), tmp_split_row[:3]))
+            df_list = da.append(df_list, line)
+            i+=1
+        df_list = df_list.reshape(i, 3)
+        dataset_pd = dd.from_dask_array(df_list, columns=["s1", "s2", "label"])
         # dataset_pd = pd.read_csv(dataset_path, sep="\t", header=None, usecols=[0, 1, 2])
         # dataset_pd = dataset_pd.rename(columns={0: "s1", 1: "s2", 2: "label"})
-
+        
     # XXX remove faulty rows
-    dataset_pd = dataset_pd.drop(
-        dataset_pd[
-            ~dataset_pd["label"].astype(str).str.contains("true|false", case=False)
-        ].index
-    )
-    dataset_pd.label.replace("(?i)TRUE", True, inplace=True, regex=True)
-    dataset_pd.label.replace("(?i)FALSE", False, inplace=True, regex=True)
+    dropping_index = dataset_pd[
+            ~dataset_pd["label"].astype(str).str.contains("true|false", case=False)].index
+    
+    dataset_pd_index = range(0, i)
+    
+    dataset_pd = dataset_pd.loc[list(set(dataset_pd_index).difference(set(dropping_index)))]
+    
+    dataset_pd.label = dataset_pd.label.replace("(?i)TRUE", True, regex=True)
+    dataset_pd.label = dataset_pd.label.replace("(?i)FALSE", False, regex=True)
+    
     # count number of False and True
-    num_true = len(dataset_pd[dataset_pd["label"] == True])
-    num_false = len(dataset_pd[dataset_pd["label"] == False])
+    counter = dataset_pd["label"].value_counts().compute().to_dict()
+    if len(counter) < 2:
+        if True not in counter.keys():
+            counter[True] = 0
+        if False not in counter.keys():
+            counter[False] = 0
+    num_true = counter[True]
+    num_false = counter[False]
+    
     if verbose:
         cprint(
             "[INFO]",
@@ -336,8 +358,8 @@ def test_tokenize(
     
     # instead of processing the entire dataset we first consider double the amount of the cutoff
     if cutoff == None:
-        cutoff = len(dataset_pd)
-    dataset_pd = dataset_pd[: cutoff * 2]
+        cutoff = dataset_pd.shape[0].compute()
+    dataset_pd = dataset_pd.loc[: cutoff * 2]
     dataset_pd["s1_unicode"] = dataset_pd["s1"].apply(
         normalizeString, args=preproc_steps
     )
@@ -346,73 +368,90 @@ def test_tokenize(
     )
 
     dataset_pd["s1_tokenized"] = dataset_pd["s1_unicode"].apply(
-        lambda x: string_split(
+        lambda x: da.from_array(string_split(
             x,
             tokenize=mode["tokenize"],
             min_gram=mode["min_gram"],
             max_gram=mode["max_gram"],
             token_sep=mode["token_sep"],
             prefix_suffix=mode["prefix_suffix"],
-        )
-    )
+        )))
     dataset_pd["s2_tokenized"] = dataset_pd["s2_unicode"].apply(
-        lambda x: string_split(
+        lambda x: da.from_array(string_split(
             x,
             tokenize=mode["tokenize"],
             min_gram=mode["min_gram"],
             max_gram=mode["max_gram"],
             token_sep=mode["token_sep"],
             prefix_suffix=mode["prefix_suffix"],
-        )
-    )
-
-    s1_tokenized = dataset_pd["s1_tokenized"].to_list()
-    s2_tokenized = dataset_pd["s2_tokenized"].to_list()
+        )))
+    
+    s1_tokenized = dataset_pd["s1_tokenized"].to_dask_array(lengths=True)
+    s2_tokenized = dataset_pd["s2_tokenized"].to_dask_array(lengths=True)
 
     # XXX we need to explain why we have an if in the following for loop
     s1_indx = [
-        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
-        for seq in s1_tokenized
-    ]
+                    [
+                        train_vocab.tok2index[tok.compute()]
+                        for tok in seq.compute()
+                        if tok.compute() in train_vocab.tok2index
+                    ] 
+                    for seq in tqdm(s1_tokenized)
+                ]
+    
     s2_indx = [
-        [train_vocab.tok2index[tok] for tok in seq if tok in train_vocab.tok2index]
-        for seq in s2_tokenized
-    ]
-
+                [
+                    train_vocab.tok2index[tok.compute()]
+                    for tok in seq.compute()
+                    if tok.compute() in train_vocab.tok2index
+                ] 
+                for seq in tqdm(s2_tokenized)
+            ]
+ 
     # Compute len(s1_indx) / len(s1_tokenized)
     # If this ratio is 1: all characters (after tokenization) could be found in the pretrained vocabulary
     # Else: some characters are missing. If "1 - (that ratio) > missing_char_threshold", remove the entry
     to_be_removed = []
     for i in range(len(s1_indx) - 1, -1, -1):
+        s1_tokenized_i = s1_tokenized[i].compute()
+        s2_tokenized_i = s2_tokenized[i].compute()
         if (
-            (1 - len(s1_indx[i]) / max(1, len(s1_tokenized[i])))
-            > missing_char_threshold
-            or (1 - len(s2_indx[i]) / max(1, len(s2_tokenized[i])))
-            > missing_char_threshold
-            or len(s1_tokenized[i]) == 0
-            or len(s2_tokenized[i]) == 0
+            (1 - len(s1_indx[i]) / max(1, s1_tokenized_i.shape[0])) >  missing_char_threshold
+            or (1 - len(s2_indx[i]) / max(1, s2_tokenized_i.shape[0])) > missing_char_threshold
+            or s1_tokenized_i.shape[0] == 0 
+            or s2_tokenized_i.shape[0] == 0
         ):
+            print(i, s1_indx[i], s1_tokenized_i)
             to_be_removed.append(i)
             del s1_indx[i]
             del s2_indx[i]
-
+    
     if verbose:
         cprint("[INFO]", bc.dgreen, "skipping {} lines".format(len(to_be_removed)))
-    dataset_pd.reset_index(inplace=True)
-    dataset_pd.drop(to_be_removed, axis=0, inplace=True)
-
-    dataset_pd["s1_indx"] = s1_indx
-    dataset_pd["s2_indx"] = s2_indx
+    
+    dataset_pd = dataset_pd.reset_index()
+    
+    dataset_pd = dataset_pd.repartition(npartitions=1)
+    
+    dataset_pd.divisions = (0, dataset_pd.shape[0].compute() - 1)
+    
+    dataset_pd = dataset_pd.loc[list(set(dataset_pd.index).difference(set(to_be_removed)))]
+    
+    dataset_pd = dataset_pd.reset_index(drop=True)
+    dataset_pd = dataset_pd.repartition(npartitions=1)
+    dataset_pd.divisions = (0, dataset_pd.shape[0].compute() - 1)
+    dataset_pd["s1_indx"] = dd.from_array(np.array([[]] + s1_indx, dtype=object)[1:])
+    dataset_pd["s2_indx"] = dd.from_array(np.array([[]] + s2_indx, dtype=object)[1:])
 
     # and then we do the cutoff again after having excluded the ones to be removed
-    dataset_pd = dataset_pd[:cutoff]
+    dataset_pd = dataset_pd.loc[:cutoff]
 
     # cleanup the indices
-    dataset_pd.reset_index(drop=True, inplace=True)
+    dataset_pd = dataset_pd.reset_index(drop=True)
 
     with pd.option_context("mode.chained_assignment", None):
         test_dc = DatasetClass(dataset_pd, train_vocab, maxlen=max_seq_len)
-
+    
     if save_test_class:
         if verbose:
             cprint(
@@ -421,7 +460,6 @@ def test_tokenize(
         abs_path = os.path.abspath(save_test_class)
         if not os.path.isdir(os.path.dirname(abs_path)):
             os.makedirs(os.path.dirname(abs_path))
-        
         # test_dc.dask_df.to_parquet(save_test_class_dask, schema=test_dc.schema)
         test_dc.df.to_pickle(open(save_test_class, 'wb'))
     return test_dc
@@ -431,15 +469,14 @@ def test_tokenize(
 class DatasetClass(Dataset):
     def __init__(self, dataset_split, dataset_vocab, maxlen=100):
         self.maxlen = maxlen
-        self.df = dataset_split
-        self.dask_df = dd.from_pandas(dataset_split, npartitions=1) #arbitrarily set to 10
+        self.df = dataset_split.compute()
         self.vocab = dataset_vocab.tok2index.keys()
-        self.schema = {
-            's1_tokenized': pyarrow.list_(pyarrow.string()),
-            's2_tokenized': pyarrow.list_(pyarrow.string()),
-            's1_index': pyarrow.list_(pyarrow.int64()),
-            's2_index': pyarrow.list_(pyarrow.int64())
-        }
+        # self.schema = {
+        #     's1_tokenized': pyarrow.list_(pyarrow.string()),
+        #     's2_tokenized': pyarrow.list_(pyarrow.string()),
+        #     's1_index': pyarrow.list_(pyarrow.int64()),
+        #     's2_index': pyarrow.list_(pyarrow.int64())
+        # }
 
         tqdm.pandas(desc="length s1", leave=False)
         self.df["s1_len"] = self.df.s1_indx.progress_apply(

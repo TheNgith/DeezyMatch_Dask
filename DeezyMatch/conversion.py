@@ -39,14 +39,15 @@ def update_lookupToken(data, directory: str):
     new_data = lookupToken(data.name)
     
     try:
-        
-        new_data.tok2index = data.tok2index
-        
         new_data.tok2count = data.tok2count
-        
-        new_data.index2tok = data.index2tok
-        
         new_data.n_tok = data.n_tok
+        try: new_data.tok2index = {k: v[0] for k, v in data.tok2index.items()}
+        except: 
+            try: new_data.index2tok = {k: v[0] for k, v in data.index2tok.items()}
+            except Exception as e: raise updatelookupTokenFailed(e)
+        else: 
+            try: new_data.index2tok = {k: v[0] for k, v in data.index2tok.items()}
+            except Exception as e: raise updatelookupTokenFailed(e+'. Updated tok2index successfully')
         
         new_path = folder + f'/{filename}_updated{ext}'
     
